@@ -1,0 +1,24 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Local environments and editor settings
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Secrets and local settings
+.env
+.env.*
+*.key
+local_settings.json
+
+# Generated batch images and runtime logs
+output/
+outputs/
+generated/
+*.log
