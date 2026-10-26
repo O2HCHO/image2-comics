@@ -1,0 +1,27 @@
+{
+  "ctd": {
+    "file": "comictextdetector.onnx",
+    "sha256": "1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f",
+    "revision": "440b978563c71b758e31aaa315d100faba1efa2f",
+    "source": "https://github.com/zyddnys/manga-image-translator/releases/tag/beta-0.2.1"
+  },
+  "bubble": {
+    "file": "bubble.onnx",
+    "sha256": "68e7e1dc2fa3128c9b014074fe6b7c3f3d94a391b378e63fd51778d9dfd5f4ea",
+    "checkpoint_sha256": "eb1329ddc9b83b3e7e057b3f0c31d12b5fbcbc438f5baff20a154aa5b360e177",
+    "revision": "1035c7ffcb91ce12f484ace1b541471575911cae",
+    "source": "https://github.com/ebhon/YOLO-manga-bubble-detector",
+    "export": {
+      "ultralytics": "8.3.0",
+      "torch": "2.14.1+cu130",
+      "opset": 12,
+      "side": 512,
+      "parity_max_abs_errors": [
+        0.00030517578125,
+        0.0004730224609375,
+        0.000335693359375,
+        0.00048828125
+      ]
+    }
+  }
+}

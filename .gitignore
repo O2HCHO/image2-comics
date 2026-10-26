@@ -22,3 +22,11 @@ output/
 outputs/
 generated/
 *.log
+inputs/
+.pytest_cache/
+
+# Local agent settings and runtime project data
+.agents/
+.codex/
+.comic-color/
+*.download

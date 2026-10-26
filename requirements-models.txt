@@ -1,0 +1,17 @@
+# Build/export only; never installed in the frozen application.
+ultralytics==8.3.0
+onnx==1.17.0
+# Export uses torch.onnx.export(dynamo=False). Use a matching torch/vision pair.
+torch==2.7.1
+torchvision==0.22.1
+onnxruntime==1.20.1
+opencv-python==4.11.0.86
+numpy==1.26.4
+pillow==11.3.0
+requests==2.32.5
+matplotlib==3.10.7
+pandas==2.3.3
+scipy==1.16.2
+psutil==7.1.1
+py-cpuinfo==9.0.0
+ultralytics-thop==2.0.9

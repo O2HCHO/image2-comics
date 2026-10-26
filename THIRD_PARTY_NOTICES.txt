@@ -1,0 +1,50 @@
+Image2 Comics 1.3 - offline comic text protection
+
+This application distribution is provided under GNU AGPL-3.0, without warranty.
+See LICENSE. The Windows package includes corresponding application source,
+build scripts, model manifest, ONNX files, modifications and tests.
+
+CTD: https://github.com/dmMaze/comic-text-detector
+Pinned source: 440b978563c71b758e31aaa315d100faba1efa2f
+Repository license: GPL-3.0 (licenses/CTD-GPL-3.0.txt).
+Unmodified ONNX from manga-image-translator release beta-0.2.1, asset 55024546.
+SHA-256: 1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f
+The upstream download page does not specify a separate weight license; the
+repository license and original provenance are retained. The author's training
+data are not distributed. No rights to those comic images are claimed.
+
+Bubble detector: https://github.com/ebhon/YOLO-manga-bubble-detector
+Pinned source/checkpoint: 1035c7ffcb91ce12f484ace1b541471575911cae
+Repository MIT notice: licenses/Bubble-MIT.txt (preserved verbatim).
+best.pt SHA-256: eb1329ddc9b83b3e7e057b3f0c31d12b5fbcbc438f5baff20a154aa5b360e177
+YOLO architecture/export tool: Ultralytics 8.3.0 (GNU AGPL-3.0).
+See licenses/Ultralytics-AGPL-3.0.txt. This distribution uses AGPL-3.0 rather
+than assuming the checkpoint's MIT notice supersedes upstream architecture terms.
+ONNX export: opset 12, 512x512, CPU, without graph simplification.
+Export version, runtime hash and tensor parity: assets/models/manifest.json.
+
+Image2 Comics modifications (2026-10-25): standalone CTD OpenCV inference,
+ONNX Runtime bubble inference, tiling, closed-boundary validation, stroke
+refinement, local removal, foreground alpha recovery, versioned caches, manual
+editing, separate cleanup/restore masks and offline repair. No runtime torch,
+translation engine, OCR recognition or font re-layout.
+
+The historical PP-OCR notice below documents the old comparison dependency.
+PP-OCR is no longer the automatic detector or fallback, and its model is no
+longer bundled in the executable.
+
+Detector: ch_PP-OCRv4_det_infer.onnx (4,745,517 bytes)
+SHA-256: d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9
+Bundled from rapidocr-onnxruntime 1.4.4 PyPI wheel.
+Original model: PaddleOCR / PP-OCRv4, PaddlePaddle Authors.
+Model source: https://github.com/PaddlePaddle/PaddleOCR
+ONNX distribution and detector implementation: https://github.com/RapidAI/RapidOCR
+License: Apache License 2.0; complete text in licenses/Apache-2.0.txt.
+Only the detection model is used; no text-recognition or angle-classification inference.
+The model is distributed unmodified. Image2 Comics adds dialogue filtering, tiling,
+rotated-view inference, registration, original-pixel compositing and editing UI.
+
+ONNX Runtime 1.20.1: https://github.com/microsoft/onnxruntime (MIT).
+OpenCV 4.11.0: https://github.com/opencv/opencv (Apache 2.0).
+NumPy 2.2.6: https://numpy.org (BSD-3-Clause).
+Other dependencies retain their bundled package license notices.
