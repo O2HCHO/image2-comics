@@ -46,6 +46,7 @@ class ColoringApp(ProjectUI, ctk.CTk):
         self.settings = load_settings() if settings is None else settings
         self.events = queue.Queue()
         self.worker = None
+        self.single_queue = []
         self.busy = False
         self.io_thread = None
         self.closing = False
@@ -67,8 +68,7 @@ class ColoringApp(ProjectUI, ctk.CTk):
         self.model = tk.StringVar(value=self.settings.get("model", "gpt-image-2"))
         mode = self.settings.get("api_mode", EDIT_MODE)
         self.mode = tk.StringVar(value=mode if mode in (EDIT_MODE, JSON_MODE) else EDIT_MODE)
-        ratio = self.settings.get("output_ratio", ORIGINAL)
-        self.ratio = tk.StringVar(value=ratio if ratio in RATIOS else ORIGINAL)
+        self.ratio = tk.StringVar(value=ORIGINAL)
         self.remember = tk.BooleanVar(value=self.settings.get("remember_api_key", False))
         try:
             denoise = min(1., max(0., float(self.settings.get("denoising_strength", .55))))
@@ -249,8 +249,8 @@ class ColoringApp(ProjectUI, ctk.CTk):
         self.ref_label = ctk.CTkLabel(panel, text="", wraplength=750, anchor="w", justify="left")
         self.ref_label.grid(row=9, column=1, sticky="ew", padx=20)
         self.update_references()
-        ctk.CTkLabel(panel, text="输出比例").grid(row=10, column=0, sticky="w", padx=20)
-        ctk.CTkOptionMenu(panel, variable=self.ratio, values=list(RATIOS)).grid(row=10, column=1, sticky="ew", padx=20, pady=10)
+        ctk.CTkLabel(panel, text="输出画布比例\n原始比例将严格锁定").grid(row=10, column=0, sticky="w", padx=20)
+        ctk.CTkLabel(panel, text="始终与原稿一致，可提高分辨率；不裁切、不补边", anchor="w").grid(row=10, column=1, sticky="ew", padx=20, pady=10)
         ctk.CTkLabel(panel, text="重绘幅度\n仅自定义 JSON 有效").grid(row=11, column=0, sticky="w", padx=20)
         ctk.CTkSlider(panel, variable=self.denoise, from_=0, to=1, number_of_steps=100).grid(row=11, column=1, sticky="ew", padx=20, pady=16)
         ctk.CTkLabel(panel, text="图像编辑地址示例：https://服务域名/v1/images/edits\n参考图需要服务支持多图编辑；上色会消耗你配置的 API 额度。", justify="left", text_color="#56657a").grid(row=12, column=1, sticky="w", padx=20, pady=12)
@@ -266,7 +266,7 @@ class ColoringApp(ProjectUI, ctk.CTk):
             self.logs.delete("1.0", "80.0")
 
     def idle_required(self):
-        if self.busy or self.scanning or (self.worker and self.worker.is_alive()):
+        if self.busy or self.scanning or self.single_queue or (self.worker and self.worker.is_alive()):
             messagebox.showinfo("任务正在运行", "请等待扫描、连接测试或上色任务结束后再操作。")
             return False
         return True
@@ -432,9 +432,62 @@ class ColoringApp(ProjectUI, ctk.CTk):
         threading.Thread(target=test, daemon=True).start()
 
     def start_single(self, source, prompt):
-        if not self.idle_required():
+        if self.closing or self.busy or self.scanning or (self.worker and self.worker.is_alive() and not isinstance(self.worker, BatchWorker)):
+            messagebox.showinfo('暂不能加入队列', '请等待扫描或本地操作完成。')
             return
-        self.start(single=(source, prompt))
+        if source not in self.files or not self.output_var.get():
+            return
+        api = ApiConfig(self.url.get().strip(), self.key.get().strip(), self.model.get().strip(),
+                        prompt, self.mode.get(), self.denoise.get(), self.ratio.get(), tuple(self.references),
+                        preserve_text=self.preserve_text.get())
+        try:
+            api.validate()
+        except ValueError as error:
+            messagebox.showerror('接口配置', str(error))
+            return
+        cfg = JobConfig(Path(self.input_var.get()), Path(self.output_var.get()), (source,), api,
+                        force=True, project=self.project)
+        if any(item.files == cfg.files for item in self.single_queue):
+            messagebox.showinfo('已在等待队列', '此页已等待生成；如需修改提示词，请清空等待队列后重新加入。')
+            return
+        self.single_queue.append(cfg)
+        self.update_single_queue()
+        self.log('加入单页生成队列：' + self.relative(source))
+        self.after(100, self.next_single)
+
+    def update_single_queue(self):
+        names = [cfg.files[0].name for cfg in self.single_queue]
+        self.review_panel.queue_status.configure(text=f'等待 {len(names)} 页：' + ' → '.join(names) if names else '等待队列为空')
+
+    def clear_single_queue(self):
+        self.single_queue.clear()
+        self.update_single_queue()
+
+    def next_single(self):
+        if self.closing or not self.single_queue:
+            return
+        if self.worker and self.worker.is_alive():
+            self.after(100, self.next_single)
+            return
+        if self.busy or self.scanning:
+            return
+        config = self.single_queue.pop(0)
+        self.update_single_queue()
+        self.launch_generation(config)
+
+    def choose_version(self, source, identity):
+        if not self.idle_required():
+            return False
+        try:
+            output = Path(self.output_var.get())
+            with output_lock(output):
+                record = self.task_store(output).use_version(Path(self.input_var.get()), source, identity)
+            self.events.put(('item', dict(source=self.relative(source), status=record['status'], record=record)))
+            self.log('已采用历史版本：' + self.relative(source))
+            return True
+        except Exception as error:
+            messagebox.showerror('采用历史版本失败', str(error))
+            return False
 
     def use_original(self, source=None):
         if not self.idle_required():
@@ -490,15 +543,18 @@ class ColoringApp(ProjectUI, ctk.CTk):
             return
         config = JobConfig(Path(self.input_var.get()), Path(self.output_var.get()), files, api,
                            allow_uncertain=uncertain, force=bool(single), project=self.project)
+        self.launch_generation(config)
+
+    def launch_generation(self, config):
         self.worker = BatchWorker(config, self.events)
-        self.review_panel.regenerate_button.configure(state="disabled")
+        self.review_panel.regenerate_button.configure(state="normal")
         self.start_button.configure(state="disabled")
         self.retry_button.configure(state="disabled")
         self.pause_button.configure(state="normal", text="暂停")
         self.stop_button.configure(state="normal")
         self.progress.set(0)
         self.status.configure(text="正在处理…")
-        self.log(f"开始处理 {len(files)} 张；成功且校验通过的同配置结果会自动跳过。")
+        self.log(f"开始处理 {len(config.files)} 张；单页修订将生成新版本。")
         gc.collect()
         self.worker.start()
 
@@ -597,6 +653,7 @@ class ColoringApp(ProjectUI, ctk.CTk):
             self.status.configure(text="正在处理…")
 
     def stop(self):
+        self.clear_single_queue()
         if self.worker:
             self.worker.stop()
             self.stop_button.configure(state="disabled")
@@ -732,6 +789,10 @@ class ColoringApp(ProjectUI, ctk.CTk):
                     self.log("任务停止：" + payload["message"])
                     self.status.configure(text="任务出错，查看日志")
                 elif kind == "finished":
+                    if payload['stopped']:
+                        self.clear_single_queue()
+                    elif not self.closing:
+                        self.after(150, self.next_single)
                     self.review_panel.regenerate_button.configure(state="normal")
                     self.start_button.configure(state="normal")
                     self.retry_button.configure(state="normal")

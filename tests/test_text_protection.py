@@ -10,7 +10,7 @@ import pytest
 
 from comic_color.config import ORIGINAL, atomic_json
 from comic_color.imaging import fingerprint
-from comic_color.text_protection import VERSION, NeedsReview, align, cache_path, detection, fuse, make_mask, png, regions, rgb
+from comic_color.text_protection import VERSION, NeedsReview, AlignmentError, align, cache_path, detection, fuse, make_mask, png, regions, rgb
 from comic_color.jobs import TaskStore, BatchWorker, JobConfig
 from comic_color.api import ApiConfig
 from comic_color.text_jobs import repair_page
@@ -60,7 +60,7 @@ def test_mask_follows_strokes_and_never_fills_box():
     assert np.count_nonzero(mask) < 500
 
 
-@pytest.mark.parametrize('transform', ['same', 'crop', 'rotate', 'scale'])
+@pytest.mark.parametrize('transform', ['same', 'crop', 'rotate', 'scale', 'stretch'])
 def test_registration_and_exact_original_text(sample, transform):
     original = rgb(sample)
     colored = original.copy()
@@ -72,6 +72,9 @@ def test_registration_and_exact_original_text(sample, transform):
         colored = cv2.warpAffine(colored, cv2.getRotationMatrix2D((250,350), 2, 1), (500,700), borderValue=(255,255,255))
     elif transform == 'scale':
         colored = cv2.resize(colored, (750,1050))
+    elif transform == 'stretch':
+        # Same layout returned at independently resized horizontal/vertical axes.
+        colored = cv2.resize(colored, (750,980))
     content, mask, info = fuse(sample, png(colored), metadata(sample), ORIGINAL)
     result = rgb(content)
     assert result.shape == original.shape
@@ -80,6 +83,17 @@ def test_registration_and_exact_original_text(sample, transform):
     assert np.array_equal(result[ink], original[ink])
     assert not np.array_equal(result[90,40], original[90,40])
     assert info['edge_score'] > .43
+
+
+def test_alignment_failure_explains_measurements_and_recovery():
+    original = drawing()
+    colored = np.random.default_rng(9).integers(0,255,(980,750,3),dtype=np.uint8)
+    with pytest.raises(AlignmentError) as caught:
+        align(original, colored, [[40,90,175,145]])
+    assert caught.value.scores
+    message = str(caught.value)
+    for detail in ('500×700', '750×980', '双向线条匹配', '预览融合', 'API', '外扩/羽化'):
+        assert detail in message
 
 
 def test_reject_wrong_layout_and_empty_mask(sample):

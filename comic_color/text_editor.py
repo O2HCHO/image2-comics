@@ -34,6 +34,9 @@ class TextEditor(ctk.CTkToplevel):
         self.preview_revision = 0
         self.pending_close = False
         self.pending_preview = False
+        self.verified_options = None
+        self.error_details = ""
+        self.right_image = None
         self.drag = None
         self.rect = None
         self.scale = 1.
@@ -63,20 +66,27 @@ class TextEditor(ctk.CTkToplevel):
             frame.grid(row=2, column=col, sticky="nsew", padx=8, pady=10)
             frame.grid_columnconfigure(0, weight=1)
             frame.grid_rowconfigure(1, weight=1)
-            ctk.CTkLabel(frame, text="原稿与保护掩码" if col == 0 else "融合预览（保存前请核对）").grid(row=0, column=0)
+            label = ctk.CTkLabel(frame, text="原稿与保护掩码" if col == 0 else "点击预览融合，查看上色图与文字恢复结果")
+            label.grid(row=0, column=0)
+            if col == 1:
+                self.right_label = label
             canvas = tk.Canvas(frame, bg="#e8edf4", highlightthickness=0)
             canvas.grid(row=1, column=0, sticky="nsew")
             self.canvases.append(canvas)
         self.canvases[0].bind("<ButtonPress-1>", self.press)
         self.canvases[0].bind("<B1-Motion>", self.motion)
         self.canvases[0].bind("<ButtonRelease-1>", self.release)
+        self.canvases[0].bind("<Configure>", lambda _: self.draw())
+        self.canvases[1].bind("<Configure>", lambda _: self.draw_right())
         footer = ctk.CTkFrame(self)
         footer.grid(row=3, column=0, columnspan=2, sticky="ew", padx=12, pady=8)
         ctk.CTkButton(footer, text="预览融合", command=self.preview).pack(side="left", padx=6, pady=10)
         ctk.CTkButton(footer, text="保存区域", command=self.save).pack(side="left", padx=6)
         ctk.CTkButton(footer, text="保存并修复此页", command=self.apply).pack(side="left", padx=6)
-        self.status = ctk.CTkLabel(footer, text="本机检测中…", wraplength=420)
-        self.status.pack(side="left", padx=12)
+        self.help_button = ctk.CTkButton(footer, text="查看原因与修复方法", command=self.show_error, state="disabled")
+        self.help_button.pack(side="left", padx=6)
+        self.status = ctk.CTkLabel(self, text="本机检测中…", wraplength=980, justify="left")
+        self.status.grid(row=5, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 8))
         self.mask_mode = tk.StringVar(value="文字恢复")
         ctk.CTkSegmentedButton(self, variable=self.mask_mode, values=["文字恢复", "清字范围"], command=lambda _: self.draw()).grid(row=4, column=0, columnspan=2, pady=4)
         self.display_mask = None
@@ -86,6 +96,24 @@ class TextEditor(ctk.CTkToplevel):
         self.after(80, self.poll)
         gc.collect()
         threading.Thread(target=self.load, daemon=True).start()
+
+    def signature(self, data):
+        import json
+        return json.dumps(data, sort_keys=True)
+
+    def show_error(self):
+        if self.error_details:
+            messagebox.showinfo("未完成文字恢复 · 原因与修复方法", self.error_details, parent=self)
+
+    def draw_right(self):
+        if self.right_image is None:
+            return
+        canvas = self.canvases[1]
+        image = self.right_image.copy()
+        image.thumbnail((max(1, canvas.winfo_width()-12), max(1, canvas.winfo_height()-12)))
+        self.right_photo = ImageTk.PhotoImage(image)
+        canvas.delete("all")
+        canvas.create_image(0, 0, image=self.right_photo, anchor="nw")
 
     def load(self):
         try:
@@ -206,6 +234,9 @@ class TextEditor(ctk.CTkToplevel):
             messagebox.showerror("融合参数", str(error), parent=self)
             return
         self.loading = True
+        self.verified_options = None
+        self.error_details = ""
+        self.help_button.configure(state="disabled")
         self.status.configure(text="本机对齐与融合中…")
         def work():
             try:
@@ -223,11 +254,12 @@ class TextEditor(ctk.CTkToplevel):
                         path = result_path(self.root, self.output, self.source, record)
                     if path is None:
                         raise ValueError("没有已有结果，可先保存区域，再上色")
-                    content, restored, info = fuse(self.source, path.read_bytes(), data, ORIGINAL,
+                    raw = path.read_bytes()
+                    self.events.put(("raw_preview", Image.fromarray(rgb(raw))))
+                    content, restored, info = fuse(self.source, raw, data, ORIGINAL,
                                                   progress=lambda message:self.events.put(('stage',message)))
                 from io import BytesIO
                 with Image.open(BytesIO(content)) as image:
-                    image.thumbnail((650, 650))
                     self.events.put(("preview", (image.copy(), info, data, rgb(restored)[:,:,0], rgb(info.pop("cleanup_png"))[:,:,0])))
             except Exception as error:
                 self.events.put(("error", str(error)))
@@ -235,6 +267,16 @@ class TextEditor(ctk.CTkToplevel):
         threading.Thread(target=work, daemon=True).start()
 
     def apply(self):
+        if self.loading:
+            return
+        try:
+            verified = self.verified_options == self.signature(self.options())
+        except ValueError as error:
+            messagebox.showerror("融合参数", str(error), parent=self)
+            return
+        if not verified:
+            self.preview()
+            return
         if self.save():
             source = self.source
             self.close()
@@ -267,6 +309,10 @@ class TextEditor(ctk.CTkToplevel):
                     self.status.configure(text=value)
                 elif kind == 'stage':
                     self.status.configure(text=value)
+                elif kind == "raw_preview":
+                    self.right_image = value
+                    self.right_label.configure(text="原始上色图（尚未恢复文字，未采用）")
+                    self.draw_right()
                 elif kind == "preview":
                     image, info, data, restored, cleanup = value
                     import json
@@ -277,14 +323,18 @@ class TextEditor(ctk.CTkToplevel):
                     self.mask_cache[(key, "restore")] = restored
                     self.mask_cache[(key, "cleanup")] = cleanup
                     self.draw()
-                    image.thumbnail((max(200, self.canvases[1].winfo_width()-12), max(200, self.canvases[1].winfo_height()-12)))
-                    self.right_photo = ImageTk.PhotoImage(image)
-                    self.canvases[1].delete("all")
-                    self.canvases[1].create_image(0,0,image=self.right_photo,anchor="nw")
-                    self.status.configure(text=f"融合预览完成 · {info['regions']} 个区域")
+                    self.right_image = image
+                    self.right_label.configure(text="融合预览（已恢复文字，保存前请核对）")
+                    self.draw_right()
+                    self.verified_options = key
+                    self.status.configure(text=f"融合预览完成 · {info['regions']} 个区域；请核对文字位置，再点击保存并修复此页")
+                    # Leave the completed preview visible for human verification.
                 else:
                     self.load_failed = self.data is None
-                    self.status.configure(text=value)
+                    self.verified_options = None
+                    self.error_details = value
+                    self.help_button.configure(state="normal")
+                    self.status.configure(text=value.splitlines()[0] + " 点击“查看原因与修复方法”；本次未保存修复结果。")
         except queue.Empty:
             pass
         if self.pending_close and not self.loading:

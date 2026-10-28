@@ -4,13 +4,35 @@ import base64
 from contextlib import ExitStack
 from dataclasses import dataclass
 import mimetypes
+import math
 from pathlib import Path
 import re
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from .config import EDIT_MODE, JSON_MODE, ORIGINAL
-from .imaging import png_bytes
+from .imaging import png_bytes, image_size, source_ratio_png
+
+
+def generation_size(source_size, model: str) -> str | None:
+    """Custom pixel sizes are supported by GPT Image 2/2.5, not all gateways."""
+    if not re.fullmatch(r'gpt-image-(?:2(?:-2026-04-21)?|2\.5-(?:sunburst|flare)(?:-2026-09-08)?)', model):
+        return None
+    width, height = source_size
+    if not 1 / 3 <= width / height <= 3:
+        return None
+    scale = min(max(1., 1536 / max(width, height)), 3840 / max(width, height),
+                math.sqrt(8_294_400 / (width * height)))
+    rw, rh = max(16, round(width * scale / 16) * 16), max(16, round(height * scale / 16) * 16)
+    while rw * rh > 8_294_400:
+        if rw >= rh:
+            rw -= 16
+        else:
+            rh -= 16
+    if not 1 / 3 <= rw / rh <= 3:
+        return None
+    # The service's 16-pixel grid can only approximate most scanned-page ratios.
+    return f"{rw}x{rh}"
 
 
 @dataclass(frozen=True)
@@ -40,6 +62,8 @@ class ApiConfig:
             raise ValueError("图像编辑地址需以 /images/edits 结尾")
         if self.mode == JSON_MODE and self.references:
             raise ValueError("自定义 JSON 模式不支持参考图，请移除参考图后重试")
+        if self.ratio != ORIGINAL:
+            raise ValueError("漫画上色输出已锁定原稿长宽比，请使用“保持原始比例”")
 
 
 def safe_error(error: object, key: str = "") -> str:
@@ -96,6 +120,11 @@ class ImageApi:
     def color(self, source: Path, config: ApiConfig) -> bytes:
         config.validate()
         headers = {"Authorization": f"Bearer {config.key}"}
+        width, height = image_size(source)
+        prompt = config.prompt + (
+            f"\n尺寸约束：原稿为 {width}×{height} 像素，输出必须保持 {width}:{height} 的长宽比。"
+            "允许提高分辨率，但横纵必须同比例放大；完整保留原稿四边、分镜与内容，禁止裁切、补边或改变构图。"
+        )
         try:
             if config.mode == EDIT_MODE:
                 with ExitStack() as stack:
@@ -103,15 +132,18 @@ class ImageApi:
                     field = "image[]" if config.references else "image"
                     files = [(field, (path.name, stack.enter_context(path.open("rb")),
                                       mimetypes.guess_type(path.name)[0] or "application/octet-stream")) for path in paths]
-                    prompt = config.prompt
                     if config.references:
                         prompt += "\n第一张图片是唯一需要上色的漫画页；后续图片仅作角色配色参考。只返回第一张漫画页的上色结果，禁止拼图或复制参考图内容。"
+                    data = {"model": config.model, "prompt": prompt, "n": "1", "output_format": "png"}
+                    size = generation_size((width, height), config.model)
+                    if size:
+                        data['size'] = size
                     response = requests.post(config.url, headers=headers, files=files,
-                                             data={"model": config.model, "prompt": prompt, "n": "1", "output_format": "png"},
+                                             data=data,
                                              timeout=config.timeout, allow_redirects=False)
             else:
                 response = requests.post(config.url, headers=headers,
-                                         json={"model": config.model, "prompt": config.prompt,
+                                         json={"model": config.model, "prompt": prompt,
                                                "image": base64.b64encode(source.read_bytes()).decode("ascii"),
                                                "denoising_strength": config.denoise},
                                          timeout=config.timeout, allow_redirects=False)
@@ -134,7 +166,9 @@ class ImageApi:
                     content = base64.b64decode(value, validate=True)
                 except ValueError as error:
                     raise ValueError("返回的图片 Base64 无效") from error
-            return png_bytes(content, ORIGINAL if config.preserve_text else config.ratio)
+            # Preserve unaltered service geometry for registration and diagnosis.
+            # The worker validates the final composite's ratio after text repair.
+            return png_bytes(content) if config.preserve_text else source_ratio_png(content, source, config.ratio)
         except requests.Timeout as error:
             raise ValueError("请求超时；服务端可能仍在生成，请确认后手动重试以避免重复计费") from error
         except requests.RequestException as error:

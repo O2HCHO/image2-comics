@@ -17,6 +17,34 @@ class NeedsReview(ValueError):
     pass
 
 
+class AlignmentError(NeedsReview):
+    """Keep measured failure reasons and recovery steps available to the UI/log."""
+
+    def __init__(self, original_size, generated_size, scores):
+        w, h = original_size
+        gw, gh = generated_size
+        lines = [f"无法安全恢复文字：原稿 {w}×{h}，生成图 {gw}×{gh}。"]
+        if not scores:
+            lines.append("没有找到可靠的对应线条；生成图可能改变了裁切、比例或构图。")
+        else:
+            best = max(scores, key=lambda item: item['edge_score'] + .1 * item['coverage'])
+            lines.append(f"最佳方案：画面覆盖 {best['coverage']:.0%}（需 ≥55%），"
+                         f"双向线条匹配 {best['edge_score']:.0%}（需 ≥43%）。")
+            failed = [str(i + 1) for i, score in enumerate(best['local_scores']) if 0 <= score < .32]
+            if failed:
+                lines.append("保护区域 " + "、".join(failed) + " 附近线条匹配不足32%，可能发生局部重绘或位移。")
+        lines.extend([
+            "右侧可查看原始上色图（尚未恢复文字）。原稿和已有结果均保留。",
+            "修复步骤：",
+            "1. 对照两图，检查是否同一页，以及分镜、边缘裁切和气泡位置。",
+            "2. 仅某处文字有问题时，取消该处保护区域，再点击“预览融合”；该处文字将保留生成图版本。",
+            "3. 若整页构图或气泡明显改变，返回监修页修改提示词，要求严格保留构图，再仅重新生成此页（会调用 API）。",
+            "外扩/羽化只调整文字笔画，不能修复画面错位。确认预览正确后再保存并修复。",
+        ])
+        self.scores = scores
+        super().__init__("\n".join(lines))
+
+
 @dataclass(frozen=True)
 class TextOptions:
     enabled: bool = True
@@ -72,7 +100,9 @@ def align(original: np.ndarray, colored: np.ndarray, boxes: list) -> tuple[np.nd
     h, w = original.shape[:2]
     gh, gw = colored.shape[:2]
     candidates = []
-    if abs(w / h - gw / gh) / (w / h) < .015:
+    # Image services can resize the two axes independently. Validate this
+    # candidate using the same global/local checks as feature registration.
+    if abs(w / h - gw / gh) / (w / h) < .15:
         candidates.append(np.array([[w / gw, 0, 0], [0, h / gh, 0]], dtype=float))
     sift = cv2.SIFT_create(nfeatures=6500)
     for limit in (1200, 2000):
@@ -101,11 +131,13 @@ def align(original: np.ndarray, colored: np.ndarray, boxes: list) -> tuple[np.nd
             if np.ptp(locations[:, 0]) > w*.25 and np.ptp(locations[:, 1]) > h*.25:
                 candidates.append(matrix)
     best = None
+    scores = []
     for matrix in candidates:
         aligned = cv2.warpAffine(colored, matrix, (w, h), flags=cv2.INTER_LANCZOS4)
         coverage = cv2.warpAffine(np.full((gh, gw), 255, np.uint8), matrix, (w, h), flags=cv2.INTER_NEAREST)
         global_score, local = edge_quality(original, aligned, coverage, boxes)
         covered = float(np.mean(coverage > 0))
+        scores.append({"edge_score": global_score, "local_scores": local, "coverage": covered})
         # Reject a layout change even if a small patch happens to match.
         if covered < .55 or global_score < .43 or any(0 <= score < .32 for score in local):
             continue
@@ -115,7 +147,7 @@ def align(original: np.ndarray, colored: np.ndarray, boxes: list) -> tuple[np.nd
             best = (quality, aligned, {"matrix": matrix.tolist(), "edge_score": global_score,
                                       "local_scores": local, "coverage": covered})
     if best is None:
-        raise NeedsReview("原稿与上色图无法可靠对齐，请核对构图、裁切和文字附近线条；未自动采用结果")
+        raise AlignmentError((w, h), (gw, gh), scores)
     return best[1], best[2]
 
 

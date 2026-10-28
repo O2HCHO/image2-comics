@@ -50,7 +50,7 @@ class ProjectUI:
         editor = getattr(self,'text_editor',None)
         if editor is not None and not editor.closed:
             editor.close()
-        if self.busy or (self.worker and self.worker.is_alive()):
+        if self.busy or getattr(self, 'single_queue', []) or (self.worker and self.worker.is_alive()):
             messagebox.showinfo('正在写入结果','请等待上色、文字修复、导出或文字编辑结束后切换项目。')
             return False
         return True
@@ -157,7 +157,7 @@ class ProjectUI:
             self.prompt.delete('1.0','end');self.prompt.insert('1.0',settings.get('prompt',DEFAULT_PROMPT))
             self.references = tuple(project.resolve(p) for p in settings.get('references',[]))
             self.update_references()
-            self.ratio.set(settings.get('output_ratio',ORIGINAL))
+            self.ratio.set(ORIGINAL)
             self.denoise.set(settings.get('denoising_strength',.55))
             self.preserve_text.set(settings.get('preserve_text',True))
             self.recursive.set(settings.get('recursive',True))

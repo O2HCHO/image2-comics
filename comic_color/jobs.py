@@ -13,7 +13,7 @@ import uuid
 
 from .api import ApiConfig, ImageApi, safe_error
 from .config import atomic_bytes, atomic_json
-from .imaging import fingerprint, valid_image
+from .imaging import ASPECT_POLICY, fingerprint, valid_image, source_ratio_png
 
 LABELS = {"pending": "待处理", "running": "处理中", "success": "成功", "failed": "失败",
           "uncertain": "待确认", "skipped": "已跳过", "needs_review": "文字需核对"}
@@ -100,6 +100,32 @@ class TaskStore:
         path = self.output_path(record)
         return (record.get("status") == "success" and path.is_file()
                 and fingerprint(path) == record.get("output_hash") and valid_image(path))
+
+    def versions(self, root: Path, source: Path):
+        rel = source.resolve().relative_to(root.resolve()).as_posix()
+        return sorted(((key, dict(record)) for key, record in self.entries.items()
+                       if record.get('root') == str(root.resolve()) and record.get('source') == rel
+                       and record.get('status') == 'success'),
+                      key=lambda item: item[1].get('updated', ''), reverse=True)
+
+    def use_version(self, root: Path, source: Path, identity: str):
+        versions = dict(self.versions(root, source))
+        record = versions.get(identity)
+        if record is None:
+            raise ValueError('此版本不属于当前页或尚未生成成功')
+        if fingerprint(source) != record.get('source_hash'):
+            raise ValueError('原稿已经改变，此历史版本不再适用')
+        if not self.reusable(record):
+            raise ValueError('此版本文件缺失或被修改，请选择其他版本')
+        page = self.page_key(root, record['source'])
+        choices = self.data.setdefault('original_pages', {})
+        if record.get('parameters', {}).get('use_original'):
+            choices[page] = record['source_hash']
+        else:
+            choices.pop(page, None)
+        self.activate(root, record)
+        self.save()
+        return self.display_record(root, record)
 
     def latest(self, root: Path) -> dict[str, dict]:
         result = {}
@@ -236,7 +262,7 @@ class BatchWorker(threading.Thread):
                 params = {"url": self.config.api.url, "model": self.config.api.model,
                           "prompt": self.config.api.prompt, "mode": self.config.api.mode,
                           "denoise": self.config.api.denoise, "ratio": self.config.api.ratio,
-                          "references": reference_hashes}
+                          "references": reference_hashes, "aspect_policy": ASPECT_POLICY}
                 if self.config.api.preserve_text:
                     from .text_protection import TextOptions
                     params["text_protection"] = TextOptions().values()
@@ -322,6 +348,8 @@ class BatchWorker(threading.Thread):
                             info['cleanup_hash'] = fingerprint(cleanup_path)
                             atomic_bytes(mask_path, mask)
                             record.update(text_metadata=info, text_mask=mask_ref)
+                        self.emit('stage', message='核对并锁定原稿长宽比')
+                        content = source_ratio_png(content, source, self.config.api.ratio)
                         if fingerprint(source) != source_hash:
                             raise ValueError("请求期间原图发生变化，结果未写入，请核对后重试")
                         path = store.output_path(record)

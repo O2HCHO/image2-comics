@@ -192,7 +192,7 @@ def fuse(source,colored,data,ratio,progress=None):
         _asset(data,'strokes')
     content = colored if isinstance(colored,bytes) else Path(colored).read_bytes()
     cache = StageCache(data.get('cache_root'))
-    key = cache.key('final-v1',[VERSION,data,hashlib.sha256(content).hexdigest(),ratio])
+    key = cache.key('final-v2',[VERSION,data,hashlib.sha256(content).hexdigest(),ratio])
     cached = cache.load(key)
     if cached:
         blobs,info = cached
@@ -233,7 +233,7 @@ def _fuse(source,colored,data,ratio,progress=None):
         return png_bytes(png(generated),ratio),png(zero),{'regions':0,'algorithm':VERSION,'models':data.get('models',{}),'cleanup_png':cleanup,**alignment,'zero_mask':True}
     groups = selection(original,data)
     cache = StageCache(data.get('cache_root'))
-    align_key = cache.key('alignment-v1',[VERSION,data['source_hash'],hashlib.sha256(colored).hexdigest(),boxes])
+    align_key = cache.key('alignment-v2',[VERSION,data['source_hash'],hashlib.sha256(colored).hexdigest(),boxes])
     aligned_cache = cache.load(align_key)
     if progress:
         progress('读取对齐缓存' if aligned_cache else '原稿与生成图对齐')

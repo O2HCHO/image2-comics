@@ -5,7 +5,7 @@ from pathlib import Path
 from collections import OrderedDict
 import gc
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from PIL import ImageTk, Image
 
 import customtkinter as ctk
@@ -36,6 +36,7 @@ class ReviewPanel(ctk.CTkFrame):
         ctk.CTkLabel(navigation, text="大图监修 · 原稿与当前结果", font=ctk.CTkFont(size=17, weight="bold")).pack(side="left", padx=14, pady=12)
         self.export_button = ctk.CTkButton(navigation, text="导出全部上色图为 PDF", command=app.export_pdf, width=180)
         self.export_button.pack(side="right", padx=12)
+        ctk.CTkButton(navigation, text="历史版本 / 采用旧版", command=self.history, width=150).pack(side="right", padx=6)
         self.gallery = ctk.CTkFrame(self, fg_color="#e8edf4")
         self.gallery.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         self.gallery.grid_columnconfigure((0, 1), weight=1, uniform="pair")
@@ -74,11 +75,14 @@ class ReviewPanel(ctk.CTkFrame):
         self.prompt = ctk.CTkTextbox(editor, height=160, border_width=1, wrap="word")
         self.prompt.grid(row=3, column=0, padx=16, pady=8, sticky="nsew")
         ctk.CTkLabel(editor, text="从原始漫画整页重新上色；沿用接口、模型和配色参考图。成功后更新对照，上一版文件保留。", wraplength=290, text_color="#56657a", justify="left").grid(row=4, column=0, padx=16, pady=8, sticky="ew")
-        self.regenerate_button = ctk.CTkButton(editor, text="仅重新生成这一页", fg_color="#187a65", command=self.regenerate)
+        self.regenerate_button = ctk.CTkButton(editor, text="重新生成此页 / 加入队列", fg_color="#187a65", command=self.regenerate)
         self.regenerate_button.grid(row=5, column=0, padx=16, pady=10, sticky="ew")
         ctk.CTkButton(editor, text="此页不需上色，直接输出原图", command=lambda: app.use_original(self.current) if self.current else None).grid(row=6, column=0, padx=16, pady=8, sticky="ew")
         self.notice = ctk.CTkLabel(editor, text="", wraplength=290, justify="left", anchor="w")
         self.notice.grid(row=10, column=0, padx=16, pady=8, sticky="ew")
+        self.queue_status = ctk.CTkLabel(editor, text="等待队列为空", wraplength=290, justify="left")
+        self.queue_status.grid(row=11, column=0, padx=16, sticky="ew")
+        ctk.CTkButton(editor, text="清空等待队列（不停止当前页）", command=app.clear_single_queue).grid(row=12, column=0, padx=16, pady=6, sticky="ew")
         ctk.CTkButton(editor, text="文字区域 / 掩码预览", command=app.edit_text).grid(row=7, column=0, padx=16, pady=4, sticky="ew")
         ctk.CTkButton(editor, text="本地修复当前页文字", command=lambda: app.repair_text((self.current,)) if self.current else None).grid(row=8, column=0, padx=16, pady=4, sticky="ew")
         ctk.CTkButton(editor, text="本地修复全部已有结果", command=app.repair_text).grid(row=9, column=0, padx=16, pady=4, sticky="ew")
@@ -94,6 +98,46 @@ class ReviewPanel(ctk.CTkFrame):
     def save_draft(self):
         if self.current is not None:
             self.drafts[self.app.relative(self.current)] = self.prompt.get("1.0", "end-1c")
+
+    def history(self):
+        if self.current is None or not self.app.idle_required():
+            return
+        source = self.current
+        store = self.app.task_store()
+        versions = store.versions(Path(self.app.input_var.get()), source)
+        if not versions:
+            messagebox.showinfo('历史版本', '此页还没有成功保存的版本。', parent=self)
+            return
+        window = ctk.CTkToplevel(self)
+        window.title('选择历史版本 · ' + source.name)
+        window.geometry('900x720')
+        window.transient(self.app)
+        window.grab_set()
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+        active = self.app.records.get(self.app.relative(source), {}).get('display_output')
+        labels = {f"版本 {len(versions)-i} · {r.get('updated','')[:19]}" + (' · 当前采用' if r['output'] == active else ''): (key,r)
+                  for i,(key,r) in enumerate(versions)}
+        selection = tk.StringVar(value=next(iter(labels)))
+        preview = ctk.CTkLabel(window, text='')
+        preview.grid(row=1,column=0,sticky='nsew',padx=12,pady=8)
+        detail = ctk.CTkLabel(window,text='',wraplength=850,justify='left')
+        detail.grid(row=2,column=0,sticky='ew',padx=12)
+        def show(label):
+            _, record = labels[label]
+            try:
+                image = thumbnail(store.output_path(record),(820,480))
+                window.photo = ImageTk.PhotoImage(image)
+                preview.configure(image=window.photo,text='')
+            except Exception:
+                preview.configure(image=None,text='版本文件缺失或无法显示，采用时会再次校验。')
+            detail.configure(text='本版提示词：' + record.get('parameters',{}).get('prompt','保留原图 / 无提示词'))
+        ctk.CTkOptionMenu(window,variable=selection,values=list(labels),command=show).grid(row=0,column=0,sticky='ew',padx=12,pady=12)
+        def adopt():
+            if self.app.choose_version(source,labels[selection.get()][0]):
+                window.destroy()
+        ctk.CTkButton(window,text='采用所选版本（不重新生成）',command=adopt).grid(row=3,column=0,pady=12)
+        show(selection.get())
 
     def select(self, source: Path, reload=True):
         if self.current != source:

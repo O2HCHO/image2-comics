@@ -7,7 +7,7 @@ import threading
 import uuid
 
 from .config import ORIGINAL, atomic_bytes
-from .imaging import fingerprint
+from .imaging import ASPECT_POLICY, fingerprint, source_ratio_png
 from .jobs import TaskStore, output_lock
 from .review import result_path
 from .text_protection import VERSION, detection, fuse
@@ -22,6 +22,7 @@ def repair_page(root: Path, output: Path, source: Path, store: TaskStore, progre
     record = {"root": str(root), "source": rel, "source_hash": fingerprint(source),
               "parameters": dict(previous.get("parameters", {})), "output": "",
               "status": "needs_review", "updated": datetime.now(timezone.utc).isoformat()}
+    record['parameters']['ratio'] = ORIGINAL
     identity = uuid.uuid4().hex
     store.entries[identity] = record
     try:
@@ -58,6 +59,8 @@ def repair_page(root: Path, output: Path, source: Path, store: TaskStore, progre
             content, mask, info = fuse(source, raw_content, data, record['parameters'].get('ratio', ORIGINAL),progress=progress)
         else:
             content, mask, info = fuse(source, raw_content, data, record['parameters'].get('ratio', ORIGINAL))
+        content = source_ratio_png(content, source, record['parameters'].get('ratio', ORIGINAL))
+        record['parameters']['aspect_policy'] = ASPECT_POLICY
         if fingerprint(source) != record["source_hash"]:
             raise ValueError("处理期间原稿改变，结果未采用，请重新检测")
         destination = Path(rel).parent / (source.name[:100] + ".text-" + identity[:12] + ".png")

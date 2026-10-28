@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import logging
 from io import BytesIO
 import os
 from pathlib import Path
@@ -10,6 +12,53 @@ from PIL import Image, ImageOps
 from .config import RATIOS, ORIGINAL
 
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+ASPECT_POLICY = "source-aspect-v1"
+
+
+def image_size(path: Path) -> tuple[int, int]:
+    with Image.open(path) as image:
+        # EXIF orientation is also applied when decoding results and previews.
+        return ImageOps.exif_transpose(image).size
+
+
+def exact_source_size(source_size, generated_size) -> tuple[int, int]:
+    """Nearest pixel area on the exact source-ratio integer lattice.
+
+    Rounding width and height separately is insufficient for exact equality.
+    Keep at least the source resolution; retain larger generated sizes when
+    possible, without adding borders or cropping panel content.
+    """
+    width, height = source_size
+    gw, gh = generated_size
+    divisor = math.gcd(width, height)
+    rw, rh = width // divisor, height // divisor
+    ideal = math.sqrt(gw * gh / (rw * rh))
+    low = max(divisor, int(ideal))
+    multiple = min((low, low + 1), key=lambda k: abs(rw * rh * k * k - gw * gh))
+    return rw * multiple, rh * multiple
+
+
+def source_ratio_png(content: bytes, source: Path, ratio: str = ORIGINAL) -> bytes:
+    """Enforce the original aspect ratio before accepting a generated result."""
+    if ratio != ORIGINAL:
+        raise ValueError("漫画上色输出已锁定原稿长宽比，请使用“保持原始比例”")
+    source_size = image_size(source)
+    try:
+        image = Image.open(BytesIO(content))
+        image.load()
+    except (OSError, ValueError, Image.DecompressionBombError) as error:
+        raise ValueError("服务返回的内容不是可解码的图片") from error
+    with image:
+        image = ImageOps.exif_transpose(image).convert("RGBA")
+        target = exact_source_size(source_size, image.size)
+        if image.size != target:
+            logging.getLogger(__name__).info("锁定原稿比例 %s: %s -> %s（原稿 %s）", source.name, image.size, target, source_size)
+            image = image.resize(target, Image.Resampling.LANCZOS)
+        if image.width * source_size[1] != image.height * source_size[0]:
+            raise ValueError("输出长宽比与原稿不一致，结果未采用")
+        stream = BytesIO()
+        image.save(stream, "PNG")
+        return stream.getvalue()
 
 
 def natural_key(value: str) -> tuple:
